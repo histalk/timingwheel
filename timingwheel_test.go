@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/RussellLuo/timingwheel"
+	"github.com/histalk/timingwheel"
 	"fmt"
 	"sync/atomic"
 )
