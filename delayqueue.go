@@ -94,10 +94,6 @@ type delayQueue struct {
 	// Similar to the sleeping state of runtime.timers.
 	sleeping int32
 	wakeupC  chan struct{}
-
-	// Similar to the rescheduling state of runtime.timers.
-	rescheduling int32
-	readyC       chan struct{}
 }
 
 // newDelayQueue creates an instance of delayQueue with the specified size.
@@ -106,7 +102,6 @@ func newDelayQueue(size int) *delayQueue {
 		C:       make(chan *bucket),
 		pq:      newPriorityQueue(size),
 		wakeupC: make(chan struct{}),
-		readyC:  make(chan struct{}),
 	}
 }
 
@@ -116,17 +111,15 @@ func (dq *delayQueue) Offer(b *bucket) {
 
 	dq.mu.Lock()
 	heap.Push(&dq.pq, item)
-	dq.mu.Unlock()
-
 	if item.Index == 0 {
 		// A new item with the earliest expiration is added.
 		if atomic.CompareAndSwapInt32(&dq.sleeping, 1, 0) {
+			dq.mu.Unlock()
 			dq.wakeupC <- struct{}{}
-		}
-		if atomic.CompareAndSwapInt32(&dq.rescheduling, 1, 0) {
-			dq.readyC <- struct{}{}
+			return
 		}
 	}
+	dq.mu.Unlock()
 }
 
 // Poll starts an infinite loop, in which it continually waits for an bucket to
@@ -137,22 +130,22 @@ func (dq *delayQueue) Poll(exitC chan struct{}) {
 
 		dq.mu.Lock()
 		item, delta := dq.pq.PeekAndShift(now)
-		dq.mu.Unlock()
-
 		if item == nil {
+
+			atomic.StoreInt32(&dq.sleeping, 1)
+			dq.mu.Unlock()
+
 			if delta == 0 {
-				// No items left.
-				atomic.StoreInt32(&dq.rescheduling, 1)
 				// Wait until a new item is added.
 				select {
-				case <-dq.readyC:
+				case <-dq.wakeupC:
 					continue
 				case <-exitC:
 					goto exit
 				}
+
 			} else if delta > 0 {
-				// At least one item is pending.
-				atomic.StoreInt32(&dq.sleeping, 1)
+
 				select {
 				case <-dq.wakeupC:
 					// A new item with an "earlier" expiration than the current "earliest" one is added.
@@ -170,8 +163,10 @@ func (dq *delayQueue) Poll(exitC chan struct{}) {
 				case <-exitC:
 					goto exit
 				}
+
 			}
 		}
+		dq.mu.Unlock()
 
 		b := item.Value.(*bucket)
 		select {
@@ -183,7 +178,6 @@ func (dq *delayQueue) Poll(exitC chan struct{}) {
 	}
 
 exit:
-	// Reset the states
+// Reset the states
 	atomic.StoreInt32(&dq.sleeping, 0)
-	atomic.StoreInt32(&dq.rescheduling, 0)
 }

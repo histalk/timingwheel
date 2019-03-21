@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"github.com/RussellLuo/timingwheel"
+	"fmt"
+	"sync/atomic"
 )
 
 func TestTimingWheel_AfterFunc(t *testing.T) {
@@ -39,4 +41,53 @@ func TestTimingWheel_AfterFunc(t *testing.T) {
 			}
 		})
 	}
+}
+
+
+
+type AtomicInt32 struct {
+	int32
+}
+
+func NewAtomicInt32(n int32) AtomicInt32 {
+	return AtomicInt32{n}
+}
+
+// Add atomically adds n to the value.
+func (i *AtomicInt32) Add(n int32) int32 {
+	return atomic.AddInt32(&i.int32, n)
+}
+
+// Get atomically returns the current value.
+func (i *AtomicInt32) Get() int32 {
+	return atomic.LoadInt32(&i.int32)
+}
+
+
+var timeCnt = NewAtomicInt32(0)
+var tw = timingwheel.NewTimingWheel(time.Millisecond*1, 3)
+
+func init() {
+	tw.Start()
+}
+
+func CycleTest() {
+	tw.AfterFunc(1*time.Millisecond, func() {
+		c := timeCnt.Add(1)
+
+		if c < 1000000 {
+			CycleTest()
+		}
+	})
+}
+
+func TestTimeS(t *testing.T) {
+	CycleTest()
+	go func() {
+		for true {
+			time.Sleep(3 *time.Second)
+			fmt.Println(timeCnt.Get())
+		}
+	}()
+	<-make(chan struct{})
 }
